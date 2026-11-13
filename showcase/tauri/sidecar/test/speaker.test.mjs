@@ -153,14 +153,18 @@ const tick = () => new Promise((r) => setTimeout(r, 0));
   sp.setModel('s2.1-pro');
   assert.equal(sp.pick, 's2.1-pro');
   assert.equal(sp.model, 's2.1-pro-free', 'no credit stays free');
+  // The free tier is a legitimate pick; unknown names are not.
   sp.setModel('s2.1-pro-free'); sp.setModel('nope');
-  assert.equal(sp.pick, 's2.1-pro', 'the free tier and unknown names are not picks');
+  assert.equal(sp.pick, 's2.1-pro-free', 'the free tier is a real pick');
   const { sp: sp2 } = setup();
   sp2.setKey('k'); await tick();
   sp2.setModel('s2.1-pro');
   sp2.start(); assert.equal(made.at(-1).model, 's2.1-pro');
   sp2.setModel('drama-3');
   sp2.start(); assert.equal(made.at(-1).model, 'drama-3');
+  // The free model can also be picked directly.
+  sp2.setModel('s2.1-pro-free');
+  sp2.start(); assert.equal(made.at(-1).model, 's2.1-pro-free');
 }
 { // Gemini: its own voice class, 24 kHz audio, the cheaper model unless the other is picked, beats not made straight away.
   made.length = 0;

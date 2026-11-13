@@ -12,9 +12,12 @@ export const FISH_MODELS = ['drama-3', 's2.1-pro', 's2.1-pro-free'];
 export const FREE_MODEL = FISH_MODELS[FISH_MODELS.length - 1];
 // The two the user picks between (Settings > Voice in the panel), most expressive first. perM: USD per million
 // UTF-8 bytes of text sent, from docs.fish.audio Pricing & Rate Limits (Nov 2026); promo: Drama 3's launch price.
+// s2.1-pro-free is Fish's zero-credit tier: always in FISH_MODELS, offered in FISH_CHOICES when the account has
+// no credit (verified by fishAccount), so users are never forced to a paid model.
 export const FISH_CHOICES = [
   { id: 'drama-3', name: 'Drama 3', perM: 50, promo: { perM: 10, until: '2026-12-01T08:00:00Z' } },
   { id: 's2.1-pro', name: 'S2.1 Pro', perM: 15 },
+  { id: 's2.1-pro-free', name: 'S2.1 Pro (free tier)', perM: 0 },
 ];
 // Roamie's own voice (the default look); JARVIS's is in sidekick.mjs LOOKS.
 export const DEFAULT_VOICE = '2680da81de8348a68e1f4dbaa79272f1';

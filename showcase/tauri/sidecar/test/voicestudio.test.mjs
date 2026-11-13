@@ -45,6 +45,9 @@ const base = `http://127.0.0.1:${server.address().port}`;
   api.mode = 'ready';
 }
 server.close();
+// `fetch` leaves undici keep-alive sockets open; close the test server's
+// connections explicitly so this standalone test does not keep Node alive.
+server.closeAllConnections();
 
 // The voice: a fake socket the test plays VoiceStudio's side of.
 class FakeWS {
@@ -87,6 +90,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const { v } = run({ voice: null });
   v.open(); FakeWS.last.open(); v.say('Hi.');
   assert.deepEqual(FakeWS.last.sent, [{ text: 'Hi.' }]);
+  v.abort(); // Clear the sentence timeout; this case only checks the initial payload.
 }
 { // Not running: an "offline" error before any audio.
   const { v, got } = run();

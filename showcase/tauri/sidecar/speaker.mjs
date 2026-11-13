@@ -266,8 +266,9 @@ export function createSpeaker({ emit, onProblem = () => {}, log = () => {}, Fish
   return {
     setKey(k) { if (localOn) return; if ((k || null) !== key) { beats = new Map(); if (!k) stopAll(); } key = k || null; if (key) check(); },
     // The user's pick. Beats are remade in it; with no credit it stays on the free tier until there is some.
+    // The free model is a legitimate pick: choosing it means "use the free tier even when I have credit."
     setModel(m) {
-      if (!P.models.includes(m) || m === P.freeModel || m === pref) return;
+      if (!P.models.includes(m) || m === pref) return;
       pref = m; beats = new Map();
       if (model !== P.freeModel) model = m;
       if (key) warm();

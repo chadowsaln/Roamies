@@ -16,7 +16,7 @@
   let state = null, tab = 'home', deferred = false;
   // What's open in the panel itself: a key field (provider id, 'fish' or 'gemini'), the row action waiting for its
   // Confirm, each long list's page (pg) and how many rows fit on one (per, measured), Memory's tab and its search.
-  const ui = { key: null, kind: {}, arm: null, pg: {}, per: {}, mtab: 'facts', q: '', bindShown: new Set() };
+  const ui = { key: null, kind: {}, arm: null, pg: {}, per: {}, mtab: 'facts', q: '', manual: '', bindShown: new Set() };
   let armTimer = 0;
   const disarm = () => { clearTimeout(armTimer); if (ui.arm) { ui.arm = null; return true; } return false; };
 
@@ -154,14 +154,16 @@
   const REDUCED = matchMedia('(prefers-reduced-motion: reduce)');
   const tokens = (n) => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n));
   // Why pick each voice model: a line under the choice, and more in its tooltip with the cost.
-  const WHY = { 'drama-3': 'More emotion. Slower, and costs more.', 's2.1-pro': 'Natural pace. Less emotion, costs less.' };
+  const WHY = { 'drama-3': 'More emotion. Slower, and costs more.', 's2.1-pro': 'Natural pace. Less emotion, costs less.', 's2.1-pro-free': 'Fish\'s free tier: no credit needed, acts well, slightly less emotion than Drama 3.' };
   const WHY_LONG = {
     'drama-3': 'The most expressive: whispers, laughs and real excitement. It talks slower, with pauses between sentences.',
     's2.1-pro': 'A natural, quicker pace. Feelings only come through lightly.',
+    's2.1-pro-free': 'The same S2.1 Pro voice on Fish\'s free tier: no credit card or balance needed. A little less drama than Drama 3, and a slightly more measured pace.',
   };
   // A spoken reply is about 200 characters (1 to 3 short sentences), so 100 replies are about 20,000. The offer's
   // last day is shown in Pacific time, as Fish states it (it ends Dec 1, 00:00 PT).
   const price = (c) => {
+    if (c.perM == 0) return 'Free tier: no credit needed. Billed to your Fish Audio account only if you add credit.';
     const per100 = (perM) => `$${(perM * 0.02).toFixed(2)}`;
     const promo = c.promo && Date.now() < Date.parse(c.promo.until)
       ? ` (${per100(c.promo.perM)} until ${new Date(Date.parse(c.promo.until) - 1).toLocaleDateString(undefined, { day: 'numeric', month: 'short', timeZone: 'America/Los_Angeles' })})` : '';
@@ -475,6 +477,35 @@
       el('select', { 'aria-label': 'Model', 'data-k': 'model', on: { change: (e) => act(`model:${e.target.value}`) } },
         model ? null : el('option', { value: '', textContent: 'Pick a model', disabled: true, selected: true }),
         on.map((p) => el('optgroup', { label: p.label }, p.models.map((m) => el('option', { value: `${p.id}:${m.id}`, textContent: m.name, selected: `${p.id}:${m.id}` === model })))))) : null;
+    // OpenRouter: discover models from https://openrouter.ai/api/v1/models instead of a hardcoded list.
+    const openRouter = state.providers.find((p) => p.id === 'openrouter');
+    const orStatus = openRouter?.openRouter?.status ?? 'idle';
+    const orReady = orStatus === 'ready';
+    const orFailed = orStatus === 'failed';
+    const orLoading = orStatus === 'loading';
+    const orModels = orReady ? (openRouter?.models ?? []) : [];
+    const orBox = openRouter && openRouter.on ? el('div', { className: 'reveal', 'data-anim': 'openrouter' },
+      el('p', { className: 'sub', textContent: 'OpenRouter models' }),
+      orLoading ? el('p', { className: 'empty note', textContent: 'Discovering OpenRouter models…' }) : null,
+      orFailed ? el('div', { className: 'setting' },
+        el('span', {}, orStatusError(openRouter)),
+        el('span', { className: 'row-btns' },
+          link('Try again', () => send({ type: 'menu', id: 'openrouter_retry' }), { k: 'openrouter_retry', aria: 'Retry OpenRouter model discovery' }))) : null,
+      orReady ? el('div', { className: 'setting' },
+        el('span', {}, 'Search OpenRouter models'),
+        el('span', { className: 'row-btns' },
+          el('span', { className: 'px field' },
+            el('input', { type: 'search', id: 'openrouter-search', value: ui.q, placeholder: 'Search models…', 'aria-label': 'Search OpenRouter models', autocomplete: 'off', spellcheck: false, 'data-k': 'openrouter-search', on: { input: (e) => { ui.q = e.target.value; render('openrouter-search'); } } })))) : null,
+      orReady ? el('span', { className: 'px field select' },
+        el('select', { 'aria-label': 'OpenRouter model', 'data-k': 'openrouter-model', on: { change: (e) => { if (e.target.value) act(`model:openrouter:${e.target.value}`); } } },
+          el('option', { value: '', textContent: 'Pick an OpenRouter model', disabled: true, selected: !model || !model.startsWith('openrouter:') }),
+          orModels.filter((m) => !ui.q || m.name.toLowerCase().includes(ui.q) || m.id.toLowerCase().includes(ui.q)).slice(0, 200).map((m) => el('option', { value: m.id, textContent: `${m.name} · OpenRouter`, selected: model === `openrouter:${m.id}` })))) : null,
+      el('div', { className: 'setting' },
+        el('span', {}, 'Or enter a model ID', el('small', { textContent: 'Any OpenRouter model ID, e.g. openrouter/auto or qwen/qwen3-32b' })),
+        el('span', { className: 'row-btns' },
+          el('span', { className: 'px field' },
+            el('input', { type: 'text', id: 'openrouter-manual', value: ui.manual ?? '', placeholder: 'model ID', 'aria-label': 'OpenRouter model ID', autocomplete: 'off', spellcheck: false, 'data-k': 'openrouter-manual', on: { input: (e) => { ui.manual = e.target.value; }, keydown: (e) => { if (e.key === 'Enter') { e.preventDefault(); const v = (ui.manual ?? '').trim(); if (v) act(`model:openrouter:${v}`); } } } })),
+          btn('Use', () => { const v = (ui.manual ?? '').trim(); if (v) act(`model:openrouter:${v}`); }, { k: 'openrouter_use', aria: 'Use the entered OpenRouter model ID' })))) : null;
     const accounts = state.providers.filter((p) => p.on || p.method);
     const { box, nav } = paged('accounts', accounts, (p) => el('li', { className: `acct${ui.key === p.id ? ' open' : ''}` },
       el('div', { className: 'setting' },
@@ -493,10 +524,17 @@
     { label: 'Accounts', pin: accounts.findIndex((p) => p.id === ui.key) });
     return [
       group('Model', 'Which AI answers you.', null,
-        select ?? el('p', { className: 'empty', textContent: 'Sign in to an account below first.' })),
+        select, orBox ?? el('p', { className: 'empty', textContent: 'Sign in to an account below first.' })),
       el('div', { className: 'group paged' }, el('div', { className: 'ghead' }, el('h2', { textContent: 'Accounts' }), el('p', { textContent: 'Sign in to use their models.' })), box),
       foot(null, nav),
     ];
+  }
+  // A short error line for the OpenRouter discovery state.
+  function orStatusError(p) {
+    const e = p?.openRouter?.error;
+    return e === 'invalid_key' ? "That OpenRouter key didn't work. Paste it again from openrouter.ai/settings/keys."
+      : e === 'network' ? "Couldn't reach OpenRouter. Check the connection and try again."
+      : "OpenRouter didn't return any models.";
   }
   function appearancePage() {
     return [
@@ -598,6 +636,7 @@
         toggle('Voice control', v.download
           ? (v.download.status === 'downloading' ? `Downloading the voice model… ${v.download.pct}%` : v.download.status === 'error' ? 'The download failed' : `Needs a ${v.download.size} download`)
           : v.keys ? `Hold ${v.keys} to talk` : 'Press your talk shortcut to talk', v.on, () => act('voice'), 'voice'),
+        v.on ? link('Listen', () => act('listen'), { k: 'listen', aria: 'Start listening' }) : null,
         v.download && v.download.status !== 'downloading' ? el('div', { className: 'links' }, link(v.download.status === 'error' ? 'Retry the download' : `Download (${v.download.size})`, () => act('voicedl'), { k: 'voicedl' })) : null,
         v.mac ? toggle('Mute Mac while talking', 'Other sounds go quiet while you talk', v.mute, () => act('mutetalk'), 'mutetalk') : null) : null,
     ];

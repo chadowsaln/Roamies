@@ -14,6 +14,7 @@ import {
   getModelsForProvider, loginChatGPT, ollamaServedContext, parseLocalModelId, registerRuntimeModels, resolveClaudeCodeBinary, revokeChatGPTSignIn, signInWithClaudeCode,
   signOutOfClaudeCode, storageKeyProvider,
 } from '@kenkaiiii/gg-core';
+import { discoverOpenRouterModels } from './openrouter.mjs';
 import { execFile, execFileSync, fork } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
@@ -140,6 +141,9 @@ const NEEDS_MODEL = needsVoiceModel(process.platform);
 const MODEL_DIR = modelDir();
 const voiceModel = { status: !NEEDS_MODEL || isReady(MODEL_DIR) ? 'ready' : 'missing', done: 0, total: totalBytes(), error: null };
 const voiceReady = () => voiceModel.status === 'ready';
+// OpenRouter models discovered from https://openrouter.ai/api/v1/models.
+// status: 'idle' (no key yet), 'loading', 'ready', 'failed'. error holds a short reason.
+let openrouterModels = { models: [], status: 'idle', error: null };
 let config = { ...DEFAULTS };
 let diagnosing = false; // a diagnostics file is being made (diagnostics.mjs)
 let shellInfo = null; // resolves the shell's reply to it: screens, tray, panel, helpers, permissions, microphones
@@ -300,6 +304,34 @@ async function refreshAuth() {
   }
   if (await auth.hasCredentials(OLLAMA_KEY).catch(() => false)) storedKeys.add(OLLAMA_KEY); else storedKeys.delete(OLLAMA_KEY);
 }
+// Discover OpenRouter's model catalog from https://openrouter.ai/api/v1/models using the saved key.
+// Called at startup, when an OpenRouter key is saved, when the panel opens, and on retry.
+async function refreshOpenRouterModels() {
+  const meta = AUTH_PROVIDERS.find((p) => p.value === 'openrouter');
+  if (!meta || !meta.methods?.includes('apikey')) { openrouterModels = { models: [], status: 'idle', error: null }; return; }
+  const keyId = meta.apiKeyVariants?.[0]?.key ?? 'openrouter';
+  if (!storedKeys.has(keyId)) { openrouterModels = { models: [], status: 'idle', error: null }; return; }
+  const c = await auth.getCredentials(keyId).catch(() => null);
+  if (!c?.accessToken) { openrouterModels = { models: [], status: 'idle', error: null }; return; }
+  openrouterModels.status = 'loading'; openrouterModels.error = null;
+  try {
+    const models = await discoverOpenRouterModels(c.accessToken);
+    openrouterModels.models = models;
+    openrouterModels.status = 'ready'; openrouterModels.error = null;
+    // Register discovered models with gg-core so getModel(), getContextWindow(), etc. resolve them
+    // (OpenRouter ids like qwen/qwen3-32b aren't in gg-core's static MODELS list).
+    registerRuntimeModels(models.map((m) => ({ ...m, provider: 'openrouter' })));
+  } catch (e) {
+    const msg = String(e?.message ?? e);
+    openrouterModels.models = [];
+    openrouterModels.status = 'failed';
+    openrouterModels.error = msg === 'openrouter_invalid_key' ? 'invalid_key'
+      : msg.startsWith('openrouter_') ? 'network'
+      : msg === 'openrouter_api_key_missing' ? 'invalid_key'
+      : 'network';
+  }
+  menu(); panel();
+}
 // Ollama's models, found when it's connected: those that can see and use tools. ollama.windows: the context it
 // really serves each one with, measured once the model is loaded (until then gg-core may guess 4k).
 const ollama = { windows: new Map(), reachable: false };
@@ -331,8 +363,15 @@ async function connectOllama() {
 // Some models run on only one kind of key (Kimi K2.8 Preview on a Kimi Code plan key, MiMo UltraSpeed on API Credits).
 const canRun = (p, id) => !!signedIn.get(p) && getAuthStorageKeys(p, id).some((k) => k === p || storedKeys.has(k));
 const runnable = (p) => getModelsForProvider(p).filter((m) => canRun(p, m.id));
+// OpenRouter's catalog from the API, or gg-core's list while discovery hasn't succeeded.
+const openRouterCatalog = (p) => p === 'openrouter' && openrouterModels.status === 'ready'
+  ? openrouterModels.models
+  : runnable(p);
 function ensureModel() {
-  if (config.provider && getModel(config.model) && canRun(config.provider, config.model)) return true;
+  const known = getModel(config.model);
+  if (config.provider && known && canRun(config.provider, config.model)) return true;
+  // OpenRouter: discovered or manually entered models may not be in gg-core's list; keep the pick if the key is saved.
+  if (config.provider === 'openrouter' && signedIn.get('openrouter')) return true;
   // A local model stays picked while Ollama is closed; the request says to open it.
   if (config.provider === 'local' && parseLocalModelId(config.model ?? '') && signedIn.get('local')) return true;
   const p = ['anthropic', 'openai', 'gemini', ...MENU_PROVIDERS].find((x) => runnable(x).length);
@@ -598,7 +637,13 @@ const resumed = loadLatestSession().then((s) => { if (s && !session) session = s
 const BUDGET_CAP = 120_000;
 // Tokens per request: kept tight for a quick reply out loud. The ChatGPT plan has its own windows (accountId).
 let credsAccountId;
-const requestBudget = () => Math.min(BUDGET_CAP, getContextWindow(config.model, { provider: config.provider, ...(agentRoute === 'api' && credsAccountId ? { accountId: credsAccountId } : {}) }) * 0.5);
+const requestBudget = () => Math.min(BUDGET_CAP, contextWindowFor(config.model, config.provider, agentRoute === 'api' && credsAccountId ? { accountId: credsAccountId } : {}) * 0.5);
+// A context window for the current model: gg-core knows its own models; OpenRouter models discovered from the API
+// may not be in gg-core's list, so fall back to a safe default.
+function contextWindowFor(id, provider, opts = {}) {
+  const w = getContextWindow(id, { provider, ...opts });
+  return Number.isFinite(w) && w > 0 ? w : 8192;
+}
 // Claude Code's session for this conversation, so a rebuilt agent continues it instead of starting over.
 let ccResume = null;
 // The Claude Code process when Anthropic is signed in with Claude (else null: the API, with a key or another provider).
@@ -617,7 +662,7 @@ async function agentModel() {
   return {
     provider: config.provider, model: config.model, route: cc ? 'claude-code' : 'api', cc: cc ?? undefined,
     thinking: m?.supportsThinking ? (CHAT_THINKING ?? undefined) : undefined,
-    baseUrl: c.baseUrl, modelInfo: config.provider === 'local' ? m : undefined, budget: Math.round(getContextWindow(config.model, { provider: config.provider }) * 0.6),
+    baseUrl: c.baseUrl, modelInfo: config.provider === 'local' ? m : undefined, budget: Math.round(contextWindowFor(config.model, config.provider) * 0.6),
   };
 }
 let agentRoute = null;
@@ -1235,6 +1280,8 @@ async function apiKeyLogin(id, given) {
   const baseUrl = variant?.baseUrl ?? meta.apiKeyBaseUrl;
   await auth.setCredentials(variant?.key ?? provider, { accessToken: key.trim(), refreshToken: '', expiresAt: Date.now() + 100 * 365 * 864e5, ...(baseUrl ? { baseUrl } : {}) });
   await refreshAuth(); ensureModel(); agent = null;
+  // Discover OpenRouter's models once its key is saved, so they show in the Model page right away.
+  if (provider === 'openrouter') await refreshOpenRouterModels().catch(() => {});
   // A Gemini key for the AI speaks too, unless the voice has a key of its own.
   if (provider === 'gemini') await syncGeminiVoiceKey();
   menu();
@@ -1568,7 +1615,7 @@ async function saveDiagnostics() {
 // The right-click menu: the basics. Everything else (memory, model, settings, updates) is in the panel.
 function menu() {
   const current = getModel(config.model);
-  const status = busy ? `${lookName()} is working…` : loggingIn ? `Signing in to ${PROVIDER_LABELS[loggingIn]}…` : current ? `${current.name} · ${PROVIDER_LABELS[config.provider] ?? config.provider}` : 'Not signed in';
+  const status = busy ? `${lookName()} is working…` : loggingIn ? `Signing in to ${PROVIDER_LABELS[loggingIn]}…` : current || config.model ? `${current?.name ?? config.model} · ${PROVIDER_LABELS[config.provider] ?? config.provider}` : 'Not signed in';
   const items = [
     { id: 'status', label: status, enabled: false },
     { sep: true },
@@ -1610,7 +1657,7 @@ function panelState() {
     busy, canNew: !busy && !!session?.messages.length,
     // The type-to-ask shortcut, for the Ask button's tooltip (none on Wayland).
     askKeys: HOTKEYS_OK ? writeSymbols() : null,
-    model: current ? { provider: config.provider, id: config.model, name: current.name, providerLabel: PROVIDER_LABELS[config.provider] ?? config.provider } : null,
+    model: current || config.model ? { provider: config.provider, id: config.model, name: (current?.name ?? config.model), providerLabel: PROVIDER_LABELS[config.provider] ?? config.provider } : null,
     providers: MENU_PROVIDERS.map((p) => {
       const meta = AUTH_PROVIDERS.find((x) => x.value === p);
       const on = !!signedIn.get(p);
@@ -1622,8 +1669,10 @@ function panelState() {
         signedIn: !!oauthOn.get(p), keySaved: !!meta && apiKeyStorageKeys(p).some((k) => storedKeys.has(k)),
         // Kimi and Xiaomi: which kind of key is being added (plan or pay-per-token).
         kinds: meta && keyKinds(meta).length > 1 ? keyKinds(meta).map(([id, label, billing]) => ({ id, label, billing })) : null,
-        models: on ? runnable(p).slice(0, 24).map((mm) => ({ id: mm.id, name: mm.name })) : [],
+        // OpenRouter: show the dynamically discovered catalog when available, falling back to gg-core's list.
+        models: on ? openRouterCatalog(p).slice(0, 200).map((mm) => ({ id: mm.id, name: mm.name })) : [],
         ...(p === 'local' && on ? { note: !ollama.reachable ? "Ollama isn't running." : runnable(p).length ? '' : "None of Ollama's models can see images. Get one with: ollama pull qwen3.5:4b" } : {}),
+        ...(p === 'openrouter' ? { openRouter: { status: openrouterModels.status, error: openrouterModels.error } } : {}),
       };
     }),
     loggingIn,
@@ -1800,7 +1849,8 @@ async function onMenu(id, via) {
     config.provider = p; config.model = rest.join(':'); agent = null; saveConfig(); menu();
     say(`Switched to ${getModel(config.model)?.name ?? config.model}.`, 'happy');
     if (p === 'local') measureLocal(config.model).catch(() => {});
-  } else if (id.startsWith('login:')) oauthLogin(id.slice(6));
+  } else if (id === 'openrouter_retry') { await refreshOpenRouterModels(); say('OpenRouter models refreshed.', 'happy'); }
+  else if (id.startsWith('login:')) oauthLogin(id.slice(6));
   else if (id.startsWith('key:')) apiKeyLogin(id.slice(4));
   else if (id.startsWith('signout:')) signOut(id.slice(8));
   else if (id === 'local:connect') connectOllama();
@@ -1837,6 +1887,7 @@ async function onMenu(id, via) {
   else if (id === 'list') showList({ seconds: 20 });
   else if (id === 'mutetalk') { config.muteWhileTalking = config.muteWhileTalking === false; saveConfig(); voiceConfig(); menu(); }
   else if (id === 'autolisten') { config.autoListen = !config.autoListen; saveConfig(); menu(); }
+  else if (id === 'listen') { send({ type: 'listen' }); }
   else if (id === 'wakeword' && MAC) { config.wakeWord = !config.wakeWord; saveConfig(); agentStale = true; voiceConfig(); menu(); }
   else if (id === 'voicedl') startVoiceDownload();
   else if (id === 'voice') {
@@ -1970,7 +2021,7 @@ function obState() {
     step: config.onboardStep ?? 0,
     oauth: signInCards(Object.keys(OAUTH), (id) => oauthOn.get(id), PROVIDER_LABELS),
     apikey: keyCards(AUTH_PROVIDERS, (id) => keyOn.get(id)),
-    connected: current && signedIn.get(config.provider) ? { provider: PROVIDER_LABELS[config.provider] ?? config.provider, model: current.name } : null,
+    connected: (current || config.model) && signedIn.get(config.provider) ? { provider: PROVIDER_LABELS[config.provider] ?? config.provider, model: current?.name ?? config.model } : null,
     keys: keys(),
     actions: config.allowActions,
     login: login.supported ? login.on : null,
@@ -2074,7 +2125,7 @@ createInterface({ input: process.stdin }).on('line', (line) => {
   let m;
   try { m = JSON.parse(line); } catch { return; }
   if (m.type === 'menu') onMenu(m.id, m.via).catch((e) => console.error('menu', e));
-  else if (m.type === 'panel_open') { panelOpen = true; panelAt = Date.now(); logLine('panel_open', {}); Promise.all([refreshAuth(), signedIn.get('local') && syncLocal(), tts().local && speech.checkLocal()]).catch(() => {}).finally(() => panel()); }
+  else if (m.type === 'panel_open') { panelOpen = true; panelAt = Date.now(); logLine('panel_open', {}); Promise.all([refreshAuth(), signedIn.get('local') && syncLocal(), tts().local && speech.checkLocal()]).then(() => { if (signedIn.get('openrouter')) return refreshOpenRouterModels(); }).catch(() => {}).finally(() => panel()); }
   else if (m.type === 'diagnostics') { shellInfo?.(m); shellInfo = null; }
   else if (m.type === 'panel_closed') { panelOpen = false; logLine('panel_closed', { why: String(m.why ?? ''), ms: Date.now() - panelAt }); }
   else if (m.type === 'panel_key' && typeof m.provider === 'string' && typeof m.key === 'string') {
@@ -2152,8 +2203,10 @@ let retired = (async () => {
 })();
 await retired;
 await refreshAuth();
-// Before ensureModel, so a local model that's picked is still there.
+// Before ensureModel, so a local model that's picked is still there. OpenRouter models are discovered now too,
+// so a previously picked OpenRouter model (which may not be in gg-core's list) is preserved across restarts.
 if (signedIn.get('local')) await syncLocal();
+if (signedIn.get('openrouter')) await refreshOpenRouterModels().catch(() => {});
 ensureModel();
 // The first request after launch gets a warm Claude Code too.
 if (config.onboarded) warmUp();

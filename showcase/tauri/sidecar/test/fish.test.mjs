@@ -105,10 +105,16 @@ assert.deepEqual(await fishAccount('k', { fetchImpl: fake(401, {}) }), { ok: fal
 assert.deepEqual(await fishAccount('k', { fetchImpl: fake(500, {}) }), { ok: false, reason: 'network' });
 assert.deepEqual(await fishAccount('k', { fetchImpl: async () => { throw new Error('offline'); } }), { ok: false, reason: 'network' });
 console.log('fish voice tests: passed');
-{ // The choices the panel offers: real paid models, priciest first (falling back only goes cheaper), prices set.
+{ // The choices the panel offers: real paid models priciest first, then the free tier. perM set for each.
   const { FISH_CHOICES, FISH_MODELS, FREE_MODEL } = await import('../fish.mjs');
-  assert.deepEqual(FISH_CHOICES.map((c) => c.id), ['drama-3', 's2.1-pro']);
-  for (const c of FISH_CHOICES) { assert.ok(FISH_MODELS.includes(c.id) && c.id !== FREE_MODEL, c.id); assert.ok(c.perM > 0 && c.name, c.id); }
+  assert.deepEqual(FISH_CHOICES.map((c) => c.id), ['drama-3', 's2.1-pro', 's2.1-pro-free']);
+  for (const c of FISH_CHOICES) {
+    assert.ok(FISH_MODELS.includes(c.id), c.id);
+    assert.ok(c.perM >= 0 && c.name, c.id);
+    if (c.id === FREE_MODEL) assert.equal(c.perM, 0, 'free tier costs nothing');
+    else assert.ok(c.perM > 0, `${c.id} has a price`);
+  }
   assert.ok(FISH_MODELS.indexOf('drama-3') < FISH_MODELS.indexOf('s2.1-pro'), 'priciest first');
+  assert.ok(FISH_MODELS.indexOf('s2.1-pro') < FISH_MODELS.indexOf('s2.1-pro-free'), 'free tier last');
   assert.ok(!Number.isNaN(Date.parse(FISH_CHOICES[0].promo.until)));
 }
