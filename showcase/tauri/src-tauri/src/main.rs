@@ -1551,7 +1551,7 @@ fn handle_sidecar(app: &AppHandle, msg: Value) {
         }
         Some("onboarding") => open_onboarding(app, msg.get("mode").and_then(Value::as_str)),
         Some("keybinds") => {
-            for (slot, which) in [(0usize, "summon"), (1, "snap"), (2, "list")] {
+            for (slot, which) in [(0usize, "summon"), (1, "snap"), (2, "list"), (3, "talkKey")] {
                 if let Some(accel) = msg.get(which).and_then(Value::as_str) {
                     if let Err(e) = set_hotkey(slot, accel) {
                         eprintln!("{which} shortcut {accel}: {e}");

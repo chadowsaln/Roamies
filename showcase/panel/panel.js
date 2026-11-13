@@ -16,9 +16,15 @@
   let state = null, tab = 'home', deferred = false;
   // What's open in the panel itself: a key field (provider id, 'fish' or 'gemini'), the row action waiting for its
   // Confirm, each long list's page (pg) and how many rows fit on one (per, measured), Memory's tab and its search.
-  const ui = { key: null, kind: {}, arm: null, pg: {}, per: {}, mtab: 'facts', q: '', manual: '', bindShown: new Set() };
+  const ui = { key: null, kind: {}, arm: null, pg: {}, per: {}, mtab: 'facts', q: '', manual: '', recordTalk: false, bindShown: new Set() };
   let armTimer = 0;
   const disarm = () => { clearTimeout(armTimer); if (ui.arm) { ui.arm = null; return true; } return false; };
+  // Waiting for a talk key: it must end as soon as this page or the panel stops being the thing in front. A cancel
+  // that isn't the user's own click (the window lost focus) redraws the row without taking focus back, so the app
+  // they just clicked doesn't get the keyboard pulled out of it.
+  const stopTalkCapture = (focus = true) => { if (!ui.recordTalk) return false; ui.recordTalk = false; render('talk-key-capture', false, focus); return true; };
+  // The talk key's words (hint, summary, holdHint) and whether it can be changed right now (locked) come from the
+  // sidekick, which decides and words them in one place (talkkey.mjs): the panel only shows them.
 
   const el = (tag, props = {}, ...kids) => {
     const n = document.createElement(tag);
@@ -635,8 +641,9 @@
       v ? group('Talking to me', 'Speak instead of typing.', null,
         toggle('Voice control', v.download
           ? (v.download.status === 'downloading' ? `Downloading the voice model… ${v.download.pct}%` : v.download.status === 'error' ? 'The download failed' : `Needs a ${v.download.size} download`)
-          : v.keys ? `Hold ${v.keys} to talk` : 'Press your talk shortcut to talk', v.on, () => act('voice'), 'voice'),
-        v.on ? link('Listen', () => act('listen'), { k: 'listen', aria: 'Start listening' }) : null,
+          : v.summary, v.on, () => act('voice'), 'voice'),
+        // Listening needs the speech model (Windows and Linux download it first), so it isn't offered before then.
+        v.on && v.ready ? link('Listen', () => act('listen'), { k: 'listen', aria: 'Start listening' }) : null,
         v.download && v.download.status !== 'downloading' ? el('div', { className: 'links' }, link(v.download.status === 'error' ? 'Retry the download' : `Download (${v.download.size})`, () => act('voicedl'), { k: 'voicedl' })) : null,
         v.mac ? toggle('Mute Mac while talking', 'Other sounds go quiet while you talk', v.mute, () => act('mutetalk'), 'mutetalk') : null) : null,
     ];
@@ -646,14 +653,28 @@
   const BIND_ROWS = [['talk', 'Talk to me'], ['summon', 'Show or hide me'], ['ask', 'Ask me'], ['list', 'Your list'], ['panel', 'This panel']];
   function behaviorPage() {
     const b = state.bind;
+    const v = state.voice;
     return [
-      group('Behavior', 'What I may do, and when I start.', null,
-        toggle('Sound effects', null, state.sound, () => act('sound'), 'sound'),
-        toggle('Allow file edits and commands', 'Change files and run commands', state.actions, () => act('actions'), 'actions'),
-        state.voice ? toggle('Auto-listen', state.voice.on ? 'Mic opens when I ask you something.' : 'Needs Voice control on', state.voice.autoListen, () => act('autolisten'), 'autolisten') : null,
-        state.voice?.mac ? toggle('Wake word', state.voice.on ? 'Say “Hey Roamies” to talk. Mic stays on.' : 'Needs Voice control on', state.voice.wakeWord, () => act('wakeword'), 'wakeword') : null,
-        state.login ? toggle('Open at login', null, state.login.on, () => act('login'), 'login') : null),
-      b ? group('Shortcuts', 'Add these as custom shortcuts in your keyboard settings, with any keys you like.', null,
+      group('Permissions & startup', 'Choose what Roamies can do and when it starts.', null,
+        toggle('Sound effects', 'Short cues for listening and actions', state.sound, () => act('sound'), 'sound'),
+        toggle('Allow file edits and commands', 'Risky actions still ask first', state.actions, () => act('actions'), 'actions'),
+        state.login ? toggle('Open at login', 'Start Roamies when you sign in', state.login.on, () => act('login'), 'login') : null),
+      state.voice ? group('Listening', 'Control when the microphone opens.', null,
+        toggle('Auto-listen', state.voice.on ? 'Listen after a spoken reply that asks a question' : 'Turn on Voice control first', state.voice.autoListen, () => act('autolisten'), 'autolisten'),
+        state.voice.mac ? toggle('Wake word', state.voice.on ? 'Say “Hey Roamies” to start listening; mic stays active' : 'Turn on Voice control first', state.voice.wakeWord, () => act('wakeword'), 'wakeword') : null) : null,
+      v ? group('Talk shortcut', state.wayland ? 'How you start listening; Wayland needs its keys set in your desktop.' : 'Hold the modifier keys, or add a single key to toggle listening.', null,
+        el('div', { className: 'setting' },
+          el('span', {}, 'Hold to talk', el('small', { textContent: v.holdHint })),
+          el('span', { className: 'px cap', textContent: v.keys ?? 'Desktop shortcut' })),
+        el('div', { className: 'setting' },
+          el('span', {}, 'Talk key', el('small', { textContent: ui.recordTalk ? 'Press F1 to F24, or Esc to cancel.' : v.hint })),
+          el('span', { className: 'row-btns' },
+            v.talkKey ? el('span', { className: 'px cap', textContent: v.talkKey }) : el('span', { className: 'empty', textContent: 'Not set' }),
+            btn(ui.recordTalk ? 'Cancel' : v.talkKey ? 'Change' : 'Set',
+              () => { if (ui.recordTalk) stopTalkCapture(); else { ui.recordTalk = true; render('talk-key-capture'); } },
+              { k: 'talk-key-capture', disabled: !!v.locked && !ui.recordTalk, aria: ui.recordTalk ? 'Cancel changing the talk key' : `${v.talkKey ? 'Change' : 'Set'} the talk key` }),
+            v.talkKey ? link('Clear', () => act('talkkey:'), { k: 'talk-key-clear', aria: 'Clear the talk key' }) : null))) : null,
+      b ? group('Desktop shortcuts', 'Wayland requires keys to be assigned in your desktop settings. Copy a command, then choose its key.', null,
         BIND_ROWS.filter(([k]) => b[k]).map(([k, label]) => el('div', { className: 'setting' },
           el('span', {}, label, ui.bindShown.has(k) ? el('small', { className: 'cmd', textContent: b[k] }) : null),
           link('Copy', () => send({ type: 'copy_bind', which: k }), { k: `bind-${k}`, aria: `Copy the command for ${label.toLowerCase()}` })))) : null,
@@ -734,7 +755,7 @@
   // ---------------------------------------------------------------- render
   const PANES = { home, memory, model: modelPage, appearance: appearancePage, voice: voicePage, behavior: behaviorPage, about: aboutPage, whatsnew: whatsNewPage };
   // focusKey: what to focus after (a data-k, or an element id); otherwise whatever had focus keeps it.
-  function render(focusKey, animate = false) {
+  function render(focusKey, animate = false, refocus = true) {
     if (!state) return;
     const active = document.activeElement;
     // Never rebuild under someone typing a key: catch up when they leave the field.
@@ -761,12 +782,16 @@
       for (const n of pane.children) { n.style.setProperty('--i', Math.min(i++, 10)); for (const li of n.querySelectorAll('.list > li')) li.style.setProperty('--i', Math.min(i++, 10)); }
       clearTimeout(render.t); render.t = setTimeout(() => pane.classList.remove('enter'), 600);
     }
-    if (keep) (document.querySelector(`.pane [data-k="${CSS.escape(keep)}"]`) ?? document.getElementById(keep))?.focus();
+    if (keep && refocus) (document.querySelector(`.pane [data-k="${CSS.escape(keep)}"]`) ?? document.getElementById(keep))?.focus();
   }
   document.addEventListener('focusout', (e) => { if (deferred && e.target.tagName === 'INPUT') setTimeout(() => deferred && render(), 0); });
   // The window changes size with the screen it opens on: as many rows as fit there.
   let resizeTimer = 0;
   addEventListener('resize', () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(() => state && render(), 120); });
+  // The panel lost the keyboard (another app was clicked) or went away behind another window: a key capture left
+  // waiting would eat that app's keys, and the F1-F24 it swallows are the app's own.
+  addEventListener('blur', () => stopTalkCapture(false));
+  document.addEventListener('visibilitychange', () => { if (document.hidden) stopTalkCapture(false); });
 
   // copy: the app has the full error behind this line; Copy details puts it on the clipboard (and the note stays
   // up longer, to leave time to press it).
@@ -787,7 +812,7 @@
     const changed = name !== tab;
     if (!changed && !focus) return;
     tab = name;
-    disarm(); ui.key = null;
+    disarm(); ui.key = null; ui.recordTalk = false;
     for (const t of TABS) {
       if (t === name) navi(t).setAttribute('aria-current', 'page'); else navi(t).removeAttribute('aria-current');
       $(`pane-${t}`).hidden = t !== name;
@@ -810,6 +835,14 @@
   });
   // Radio groups: arrows move the choice, like the setup guide's.
   document.addEventListener('keydown', (e) => {
+    if (ui.recordTalk) {
+      e.preventDefault(); e.stopPropagation();
+      if (e.key === 'Escape') { stopTalkCapture(); return; }
+      if (/^F(?:[1-9]|1[0-9]|2[0-4])$/.test(e.code)) {
+        ui.recordTalk = false; act(`talkkey:${e.code}`); render('talk-key-capture');
+      }
+      return;
+    }
     if (e.key === 'Escape' && !e.defaultPrevented && tipFor) { e.preventDefault(); hideTip(); return; }
     if (e.key === 'Escape' && !e.defaultPrevented) { const was = ui.arm; if (ui.key) closeKey(); else if (disarm()) render(was ?? undefined); else hide(); return; }
     const tl = e.target.closest?.('[role="tablist"]');
@@ -852,13 +885,15 @@
     render(null, true);
   };
   window.__panelShut = () => {
-    disarm(); ui.key = null; unarmQuit();
+    disarm(); ui.key = null; ui.recordTalk = false; unarmQuit();
     body.classList.remove('opening');
     if (REDUCED.matches) { body.classList.add('shut'); return; }
     body.classList.add('shutting');
   };
   // A click anywhere else puts an armed Confirm back.
   document.addEventListener('pointerdown', (e) => {
+    // A click anywhere else gives up the key capture (after the click lands, so it isn't swallowed).
+    if (ui.recordTalk && !e.target.closest?.('[data-k="talk-key-capture"]')) { ui.recordTalk = false; setTimeout(() => !ui.recordTalk && render('talk-key-capture'), 0); }
     if (!e.target.closest?.('#head-quit')) unarmQuit();
     if (ui.arm && !e.target.closest?.('.arm[aria-pressed="true"], .ibtn[aria-pressed="true"]')) {
       const text = document.querySelector('.pane .arm[aria-pressed="true"]');
@@ -925,12 +960,19 @@
       geminiShared: new URLSearchParams(location.search).has('shared'), geminiModel: 'gemini-3.8-flash-lite-tts',
       geminiModels: [{ id: 'gemini-3.8-flash-lite-tts', name: 'Flash Lite', per10s: 0.0015 }, { id: 'gemini-3.8-flash-tts', name: 'Flash', per10s: 0.00225 }],
       fishModels: [{ id: 'drama-3', name: 'Drama 3', perM: 50, promo: { perM: 10, until: '2026-12-01T08:00:00Z' } }, { id: 's2.1-pro', name: 'S2.1 Pro', perM: 15 }],
-      voice: { on: true, keys: '⌃⌥', ready: true, mac: true, mute: true, wakeWord: false, download: null }, askKeys: '⌥⌘',
+      voice: { on: true, keys: '⌃⌥', talkKey: '', ready: true, mac: true, mute: true, wakeWord: false, download: null }, askKeys: '⌥⌘',
       sound: true, actions: false, login: { on: true },
       update: { available: new URLSearchParams(location.search).has('update') && new URLSearchParams(location.search).get('update') !== 'failed' ? '0.9.1' : null, installing: false, checking: false, result: null },
       intro: false,
     };
     const q = new URLSearchParams(location.search);
+    // The talk key's words and whether its button is locked come from the sidekick's rules (talkkey.mjs), not a copy here.
+    let talk = null;
+    const talkNow = () => {
+      const t = talk?.({ key: s.voice.talkKey, voiceOn: s.voice.on, ready: s.voice.ready, hotkeys: true, hold: s.voice.keys, error: s.voice.talkError ?? '' }) ?? {};
+      return { locked: t.locked, hint: t.hint, summary: t.summary, holdHint: t.holdHint };
+    };
+    import('../tauri/sidecar/talkkey.mjs').then((m) => { talk = m.talkKeyState; Object.assign(s.voice, talkNow()); window.__panel({ kind: 'state', state: s }); }).catch(() => {});
     if (q.has('busy')) Object.assign(s, { busy: true, status: { state: 'busy', text: 'Reading notes.md' } });
     if (q.has('empty')) Object.assign(s, { recent: [], facts: [], commitments: [], usage: null });
     if (q.has('many')) {
@@ -968,6 +1010,8 @@
       if (id.startsWith('size:')) { s.size = id.slice(5); setTimeout(() => window.__panel({ kind: 'state', state: s }), 120); }
       if (id.startsWith('tts:')) { s.tts = id.slice(4); s.studio = s.tts === 'voicestudio' ? STUDIO[q.get('studio')] ?? STUDIO.on : null; setTimeout(() => window.__panel({ kind: 'state', state: s }), 120); }
       if (id.startsWith('studiovoice:') && s.studio) { s.studio.voice = id.slice(12) === 'default' ? null : id.slice(12); setTimeout(() => window.__panel({ kind: 'state', state: s }), 120); }
+      // A key picked or cleared replaces a refused one, so the row unlocks (the sidekick clears its error the same way).
+      if (id.startsWith('talkkey:')) { s.voice.talkKey = id.slice(8); s.voice.talkError = ''; Object.assign(s.voice, talkNow()); setTimeout(() => window.__panel({ kind: 'state', state: s }), 120); }
       if (id.startsWith('look:')) { s.look = id.slice(5); s.name = s.looks.find(([v]) => v === s.look)?.[1] ?? s.name; setTimeout(() => window.__panel({ kind: 'state', state: s }), 120); }
       return null;
     };

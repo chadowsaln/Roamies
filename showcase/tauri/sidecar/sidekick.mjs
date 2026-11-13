@@ -33,6 +33,7 @@ import { downloadModel, isReady, modelDir, sizeLabel, totalBytes } from './voice
 import { copyText, createTools, expand, fitImage, imageBlock, winOpen } from './tools.mjs';
 import { describeMarks } from './marks.mjs';
 import { faviconFor } from './draw.mjs';
+import { talkKeyState } from './talkkey.mjs';
 import { QUESTIONS, openNote, answerTurn, wantsSkip, endsChat, splitTurn, plain, stripNote, tourBeats, goalFrom, showcaseBeats } from './intro.mjs';
 import { SpeechText, CueFilter, VOICE_CUES, endsWithQuestion } from './speech.mjs';
 import { createSpeaker } from './speaker.mjs';
@@ -91,8 +92,8 @@ const FAST = { anthropic: 'claude-haiku-5-5', openai: 'gpt-6-luna', gemini: 'gem
 // ---------- config ----------
 // On Windows, Ctrl+Alt is AltGr on many keyboards (Ctrl+Alt+S types "ś" in Polish), so it uses Ctrl+Shift.
 const DEFAULT_KEYS = process.platform === 'win32'
-  ? { talk: ['control', 'option'], summon: 'Control+Shift+KeyS', snap: 'Control+Shift+KeyA', list: 'Control+Shift+KeyL' }
-  : { talk: ['control', 'option'], summon: 'Control+Alt+KeyS', snap: 'Control+Alt+KeyA', list: 'Control+Alt+KeyL' };
+  ? { talk: ['control', 'option'], talkKey: '', summon: 'Control+Shift+KeyS', snap: 'Control+Shift+KeyA', list: 'Control+Shift+KeyL' }
+  : { talk: ['control', 'option'], talkKey: '', summon: 'Control+Alt+KeyS', snap: 'Control+Alt+KeyA', list: 'Control+Alt+KeyL' };
 const DEFAULTS = {
   provider: null, model: null, sound: true, allowActions: false, voice: true,
   onboarded: false, onboardStep: 0, filesAsked: false, keys: DEFAULT_KEYS, muteWhileTalking: true, autoListen: false, wakeWord: false, setupVersion: 0, size: 'default', look: 'classic', introDone: false,
@@ -248,8 +249,19 @@ const MOD_SYMBOL = { control: '⌃', option: '⌥', shift: '⇧', command: '⌘'
 const MOD_WORD = process.platform === 'darwin'
   ? { control: 'Control', option: 'Option', shift: 'Shift', command: 'Command' }
   : { control: 'Ctrl', option: 'Alt', shift: 'Shift', command: LINUX ? 'Super' : 'Win' };
+const validTalkKey = (k) => typeof k === 'string' && (k === '' || /^F(?:[1-9]|1\d|2[0-4])$/.test(k));
+// A saved talk key the shell wouldn't take (another app owns it): kept here so nothing claims the key works.
+let talkKeyError = '';
 // write: the type-to-ask pair (a quick tap of two modifier keys), never the same pair as talk (platform.mjs).
-const keys = () => { const k = { ...DEFAULT_KEYS, ...(config.keys ?? {}) }; return { ...k, write: writeChord(process.platform, k.talk, k.write) }; };
+const keys = () => {
+  const k = { ...DEFAULT_KEYS, ...(config.keys ?? {}) };
+  if (!validTalkKey(k.talkKey)) k.talkKey = '';
+  return { ...k, write: writeChord(process.platform, k.talk, k.write) };
+};
+// The talk key, decided and worded in one place (talkkey.mjs): the panel shows these words, the shell gets a key
+// only while it can listen.
+const talkState = () => talkKeyState({ key: keys().talkKey, voiceOn: !!config.voice, ready: voiceReady(), error: talkKeyError, hotkeys: HOTKEYS_OK, hold: talkSymbols() });
+const talkKeyOn = () => talkState().usable;
 const sortMods = (m) => [...m].sort((a, b) => MOD_ORDER.indexOf(a) - MOD_ORDER.indexOf(b));
 const talkSymbols = () => (process.platform === 'darwin' ? sortMods(keys().talk).map((m) => MOD_SYMBOL[m]).join('') : talkWords());
 const talkWords = () => sortMods(keys().talk).map((m) => MOD_WORD[m]).join('+');
@@ -258,12 +270,19 @@ const writeSymbols = () => (process.platform === 'darwin' ? sortMods(keys().writ
 const validTalk = (t) => Array.isArray(t) && t.length === 2 && new Set(t).size === 2 && t.every((m) => MOD_ORDER.includes(m));
 // Accelerators look like "Control+Alt+KeyS": at least one of Control/Alt/Command, then one key code.
 const validSummon = (a) => typeof a === 'string' && /^((Control|Alt|Shift|Command)\+)+[A-Za-z0-9]+$/.test(a) && /(Control|Alt|Command)\+/.test(a);
-// The shell watches for the type-to-ask tap itself; on Wayland it can't see the keys, so it gets no pair.
-const sendKeys = () => send({ type: 'keybinds', ...keys(), write: HOTKEYS_OK ? keys().write : undefined });
+// The shell watches for the type-to-ask tap itself; on Wayland it can't see the keys, so it gets no pair. It only
+// takes the talk key while that key can listen, so one saved for later isn't taken from every app for nothing.
+const sendKeys = () => send({ type: 'keybinds', ...keys(), talkKey: HOTKEYS_OK ? (talkKeyOn() ? keys().talkKey : '') : undefined, write: HOTKEYS_OK ? keys().write : undefined });
 // How to talk, in a sentence: hold the keys, or on Wayland (where no app can watch the keyboard) press the shortcut
 // they bound to `roamies --talk`, which starts listening and sends on a second press or a pause.
-const talkHow = () => (HOTKEYS_OK ? `Hold ${talkWords().replace('+', ' and ')}` : 'Press your talk shortcut');
-const talkHowLong = () => (HOTKEYS_OK ? `${talkHow()} while you talk` : 'Press your talk shortcut, talk, then press it again (or just pause)');
+const talkHow = () => talkKeyOn() ? `Press ${keys().talkKey}` : HOTKEYS_OK ? `Hold ${talkWords().replace('+', ' and ')}` : 'Press your talk shortcut';
+const talkHowLong = () => talkKeyOn()
+  ? `Press ${keys().talkKey}, talk, then press it again (or just pause)`
+  : (HOTKEYS_OK ? `${talkHow()} while you talk` : 'Press your talk shortcut, talk, then press it again (or just pause)');
+const talkPrompt = () => talkKeyOn()
+  ? `${userName} presses ${keys().talkKey} to start listening, then presses it again or pauses to send`
+  : HOTKEYS_OK ? `${userName} holds ${talkWords()} to talk`
+    : `${userName} presses the key they bound to ${BIND.talk} to start talking and again to send (a pause sends too)`;
 const MAC = process.platform === 'darwin';
 // What the model is told about the computer. "darwin" alone left it using PC habits: Cmd+End (does nothing in Mac
 // text, so lines landed at the top) and GNU flags like cat -A that macOS doesn't have. Read once; it never changes mid-run.
@@ -561,7 +580,7 @@ const livePrompt = (context = '') => {
   const open = commitmentsText(), done = doneTodayText(), working = agents.liveText();
   const turn = `Live state (current as of this moment):
 ${frontNow ? `${frontNow}\n` : ''}- Editing files, running commands and controlling other apps: ${config.allowActions ? 'ALLOWED' : `switched OFF (tell the user to turn on "Allow File Edits & Commands" on the Behavior page in ${PANEL} if they want it)`}.
-${VOICE_OK ? `- Voice: ${!config.voice ? 'off' : voiceReady() ? `on; ${HOTKEYS_OK ? `${userName} holds ${talkWords()} to talk` : `${userName} presses the key they bound to ${BIND.talk} to start talking and again to send (a pause sends too)`}${config.autoListen ? '. Auto-listen is on: when your reply to a spoken question ends with a question, the mic opens by itself for their answer' : ''}${MAC && config.wakeWord ? `. Wake word is on: ${userName} can also say "Hey Roamies" to start talking hands-free, and what they say right after it is the request` : ''}` : `on, but the speech model isn't downloaded yet (${voiceModel.status === 'downloading' ? 'downloading now' : `the Voice page in ${PANEL}`})`}.` : ''}
+${VOICE_OK ? `- Voice: ${!config.voice ? 'off' : voiceReady() ? `on; ${talkPrompt()}${config.autoListen ? '. Auto-listen is on: when your reply to a spoken question ends with a question, the mic opens by itself for their answer' : ''}${MAC && config.wakeWord ? `. Wake word is on: ${userName} can also say "Hey Roamies" to start talking hands-free, and what they say right after it is the request` : ''}` : `on, but the speech model isn't downloaded yet (${voiceModel.status === 'downloading' ? 'downloading now' : `the Voice page in ${PANEL}`})`}.` : ''}
 - Shortcuts: ${HOTKEYS_OK ? `type a question to you: a quick tap of ${writeWords()} (press both and let go), which opens a text field beside the cursor (Enter sends, Shift+Enter adds a line, Esc or another tap closes it); show or hide you ${keyWords(keys().summon)}` : `on this Wayland desktop no app can have global shortcuts, so ${userName} binds keys to these commands in their desktop's keyboard settings: ${BIND.summon} (show or hide you), ${BIND.ask} (ask you), ${BIND.list} (the list), ${BIND.talk} (talk) and ${BIND.panel} (the panel)`}${SNAP_OK ? `; ask about an area ${keyWords(keys().snap)}` : ''}${CIRCLE_OK ? "; while holding the talk keys, moving the cursor round something circles it (no clicking; it snaps shut with a click when the circle closes, and loose lines don't count) and you'll see what they circled" : ''}${HOTKEYS_OK ? `; show the list ${keyWords(keys().list)}` : ''}.${HANDS_OK ? '' : ' Asking about an area, reading app windows, finding things on screen by their words and working other apps need the Roamies app, which isn\'t running here; draw there with x, y from a screenshot.'}`;
   const memory = `${open ? `Open commitments:\n${open}` : 'No open commitments.'}${done ? `\nDone today (ticked off on the list or by you; still shown struck through until midnight):\n${done}` : ''}
 ${facts.length ? `What you know about ${userName}${total > facts.length ? ` (${facts.length} most relevant of ${total})` : ''}:\n${facts.map((f) => `- ${f.id}: ${f.text}`).join('\n')}` : `You don't know anything lasting about ${userName} yet.`}${working ? `\n${working}` : ''}`;
@@ -1649,6 +1668,7 @@ const panelNote = (text, bad = false, p = null) => panelOpen && send({ type: 'pa
 function panelState() {
   const current = getModel(config.model);
   const doing = activity.doing();
+  const talk = talkState();
   return {
     version: VERSION, whatsNewFrom: config.whatsNewFrom ?? null, os: MAC ? 'mac' : process.platform === 'win32' ? 'win' : LINUX ? 'linux' : 'other', snap: SNAP_OK,
     // Wayland: shortcuts are commands bound in the desktop's settings (bind), and there's no Cursor size.
@@ -1688,7 +1708,9 @@ function panelState() {
     geminiModel: config.geminiModel, geminiModels: GEMINI_CHOICES,
     studio: tts().local ? studioState() : null,
     voice: VOICE_OK ? {
-      on: !!config.voice, keys: HOTKEYS_OK ? talkSymbols() : null, ready: voiceReady(), mac: MAC, mute: config.muteWhileTalking !== false, autoListen: !!config.autoListen, wakeWord: !!config.wakeWord,
+      on: !!config.voice, keys: HOTKEYS_OK ? talkSymbols() : null, talkKey: keys().talkKey, ready: voiceReady(), mac: MAC, mute: config.muteWhileTalking !== false, autoListen: !!config.autoListen, wakeWord: !!config.wakeWord,
+      // Whether the key works right now, and the words the panel shows for it (talkkey.mjs).
+      locked: talk.locked, hint: talk.hint, summary: talk.summary, holdHint: talk.holdHint,
       download: NEEDS_MODEL && config.voice && !voiceReady() ? { status: voiceModel.status, pct: voiceModel.total ? Math.floor((voiceModel.done / voiceModel.total) * 100) : 0, size: sizeLabel() } : null,
     } : null,
     sound: !!config.sound, actions: !!config.allowActions,
@@ -1723,6 +1745,7 @@ async function getVoiceModel() {
     voiceModel.status = 'ready';
     logLine('voice_model', { phase: 'ready' });
     voiceConfig();
+    sendKeys(); // the talk key can listen now, so the shell may take it
     if (!onboarding && config.voice) say(`My voice is ready. ${talkHow()} to talk to me.`, 'happy');
   } catch (e) {
     voiceModel.status = 'error';
@@ -1732,6 +1755,7 @@ async function getVoiceModel() {
     if (!onboarding) say(`I couldn't download my voice. ${voiceModel.error}`, 'concerned');
   }
   modelUpdate(true);
+  panel(); // ready (or failed): the talk key's reason and its button change with it
 }
 const startVoiceDownload = () => {
   if (voiceModel.status === 'downloading') return say(`Still downloading my voice: ${Math.floor((voiceModel.done / voiceModel.total) * 100)}% done.`, 'happy');
@@ -1868,6 +1892,18 @@ async function onMenu(id, via) {
   else if (id.startsWith('tts:')) setTts(id.slice(4));
   else if (id.startsWith('geminivoice:')) setGeminiVoice(id.slice(12));
   else if (id.startsWith('studiovoice:')) setStudioVoice(id.slice(12));
+  else if (id.startsWith('talkkey:')) {
+    const key = id.slice(8);
+    if (!validTalkKey(key)) return panelNote('Choose a function key from F1 to F24.', true);
+    const previous = keys().talkKey;
+    talkKeyError = '';
+    config.keys = { ...keys(), talkKey: key }; saveConfig(); sendKeys(); menu(); panel();
+    if (!key) panelNote(WAYLAND && previous ? `Remove the ${previous} binding from Keyboard settings too.` : 'The talk key was cleared; the modifier shortcut still works.');
+    else if (WAYLAND) panelNote(`In your desktop's Keyboard Shortcuts settings, bind ${key} to the Talk to me command, roamies --talk.`);
+    else if (!config.voice) panelNote(`Saved ${key}. It listens once Voice control is on.`);
+    else if (!voiceReady()) panelNote(`Saved ${key}. It listens once the voice model is downloaded.`);
+    else panelNote(`Press ${key} to listen; press it again or pause to send.`);
+  }
   else if (id === 'voicestudio_check') { await speech.checkLocal(); menu(); if (onboarding) obState(); }
   else if (id.startsWith('geminimodel:') && GEMINI_CHOICES.some((c) => c.id === id.slice(12))) {
     config.geminiModel = id.slice(12); saveConfig(); if (tts().id === 'gemini') speech.setModel(config.geminiModel); menu();
@@ -1891,7 +1927,7 @@ async function onMenu(id, via) {
   else if (id === 'wakeword' && MAC) { config.wakeWord = !config.wakeWord; saveConfig(); agentStale = true; voiceConfig(); menu(); }
   else if (id === 'voicedl') startVoiceDownload();
   else if (id === 'voice') {
-    config.voice = !config.voice; saveConfig(); voiceConfig(); menu();
+    config.voice = !config.voice; saveConfig(); voiceConfig(); sendKeys(); menu(); panel(); // the talk key row locks with it
     if (config.voice && !voiceReady()) return startVoiceDownload();
     say(config.voice ? `Voice is on. ${talkHow()} to talk to me.` : `Voice is off. You can still ask me from my ${TRAY} icon.`, 'happy');
   }
@@ -2112,9 +2148,16 @@ async function onGuide(m) {
     config.keys = next; saveConfig(); sendKeys(); menu();
     ob({ kind: 'keys', keys: keys() });
   } else if (m.type === 'keybind_error') {
-    // The OS refused the new show/hide shortcut (another app owns it): put the old one back.
+    // The OS refused a shortcut (another app owns it): put the old one back when this was a change.
     if (keysBefore && ['summon', 'snap', 'list'].includes(m.which)) { config.keys = { ...keys(), [m.which]: keysBefore[m.which] }; saveConfig(); sendKeys(); menu(); }
-    ob({ kind: 'keys', keys: keys(), error: 'Another app already uses that shortcut. Try a different one.' });
+    if (m.which === 'talkKey' && (!m.accel || m.accel === keys().talkKey)) {
+      // Whether this came from the config (startup, voice turning on) or a change just made: the shell doesn't hold
+      // the key, so nothing may claim it works until another one is picked. A key already replaced is left alone.
+      talkKeyError = m.accel || keys().talkKey;
+      panel();
+      if (panelOpen) panelNote(`Another app already uses ${talkKeyError}. Pick another talk key.`, true);
+    }
+    if (m.which !== 'talkKey') ob({ kind: 'keys', keys: keys(), error: 'Another app already uses that shortcut. Try a different one.' });
   } else if (m.type === 'ob_done') {
     config.onboarded = true; config.onboardStep = 0; config.setupVersion = SETUP_VERSION; saveConfig();
   }

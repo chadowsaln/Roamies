@@ -766,6 +766,15 @@ final class Voice {
         showListening("handsfree", uptime())
     }
 
+    /// A single-key talk shortcut toggles a hands-free take: first press listens, next press sends.
+    func toggle() {
+        switch phase {
+        case .idle, .wake: listenNow()
+        case .armed, .holding, .handsFree: end("toggled"); finish()
+        case .finishing: break
+        }
+    }
+
     func externalCancel() {
         if phase == .armed || phase == .holding || phase == .handsFree { cancel() }
         blocked = true
@@ -1190,6 +1199,7 @@ Thread.detachNewThread {
         switch msg["cmd"] as? String {
         case "cancel": DispatchQueue.main.async { voice.externalCancel() }
         case "listen": DispatchQueue.main.async { voice.listenNow() }
+        case "toggle": DispatchQueue.main.async { voice.toggle() }
         // The sidekick is answering (it appears where the cursor is): the listening pill can go.
         case "handoff": DispatchQueue.main.async { voice.wave.hide() }
         // The sidekick following the cursor in its cursor form, drawn here (buddy.swift) until the page takes it back.

@@ -4,19 +4,22 @@ use super::*;
 use std::cell::RefCell;
 use std::io::{BufRead, BufReader, Write};
 use std::process::Child;
-use std::sync::atomic::AtomicU32;
+use std::sync::atomic::{AtomicBool, AtomicU32};
 
 /// Id of the registered show/hide hotkey, read by the hotkey event handler.
 static SUMMON_ID: AtomicU32 = AtomicU32::new(0);
 /// Id of the registered "ask about an area" hotkey.
 static SNAP_ID: AtomicU32 = AtomicU32::new(0);
 static LIST_ID: AtomicU32 = AtomicU32::new(0);
+/// Id of the optional single-key talk shortcut (for example F8).
+static TALK_ID: AtomicU32 = AtomicU32::new(0);
+static TALK_DOWN: AtomicBool = AtomicBool::new(false);
 /// Id of the Esc hotkey, held only while the Roamie is on screen (0 when it isn't).
 static ESC_ID: AtomicU32 = AtomicU32::new(0);
 
 thread_local! {
     // The hotkey manager must live on the main thread; it also owns the current show/hide hotkey.
-    static HOTKEYS: RefCell<Option<(global_hotkey::GlobalHotKeyManager, [Option<global_hotkey::hotkey::HotKey>; 3])>> = const { RefCell::new(None) };
+    static HOTKEYS: RefCell<Option<(global_hotkey::GlobalHotKeyManager, [Option<global_hotkey::hotkey::HotKey>; 4])>> = const { RefCell::new(None) };
     // The overlays that have the Roamie (or its card, or its ask field) on screen right now.
     static ESC_UP: RefCell<std::collections::HashSet<String>> = RefCell::new(std::collections::HashSet::new());
 }
@@ -115,11 +118,21 @@ fn cancel_voice(app: &AppHandle) {
 pub(crate) fn init_hotkeys(app: &AppHandle) {
     use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
     match GlobalHotKeyManager::new() {
-        Ok(m) => HOTKEYS.with(|h| *h.borrow_mut() = Some((m, [None, None, None]))),
+        Ok(m) => HOTKEYS.with(|h| *h.borrow_mut() = Some((m, [None, None, None, None]))),
         Err(e) => return eprintln!("hotkeys unavailable: {e}"),
     }
     let app = app.clone();
     GlobalHotKeyEvent::set_event_handler(Some(move |e: GlobalHotKeyEvent| {
+        if e.id() != 0 && e.id() == TALK_ID.load(Ordering::Relaxed) {
+            if e.state() == HotKeyState::Released {
+                TALK_DOWN.store(false, Ordering::Relaxed);
+                return;
+            }
+            if TALK_DOWN.swap(true, Ordering::Relaxed) { return; }
+            let app2 = app.clone();
+            let _ = app.run_on_main_thread(move || to_voice(&app2, &json!({ "cmd": "toggle" })));
+            return;
+        }
         if e.state() != HotKeyState::Pressed {
             return;
         }
@@ -158,16 +171,24 @@ pub(crate) fn init_hotkeys(app: &AppHandle) {
     }));
 }
 
-/// Swaps one global shortcut (0 = show/hide, 1 = ask about an area, 2 = show the list). On failure (bad format, or
-/// another app owns it) the old one stays.
+/// Swaps a global shortcut (show/hide, area, list, talk). An empty talk shortcut unregisters it. On failure the old
+/// shortcut stays registered.
 pub(crate) fn set_hotkey(slot: usize, accel: &str) -> Result<(), String> {
     use global_hotkey::hotkey::HotKey;
-    let new: HotKey = accel.parse().map_err(|e| format!("{e}"))?;
-    let id_slot = [&SUMMON_ID, &SNAP_ID, &LIST_ID][slot];
+    let ids = [&SUMMON_ID, &SNAP_ID, &LIST_ID, &TALK_ID];
+    let id_slot = ids.get(slot).ok_or_else(|| "unknown hotkey slot".to_string())?;
     HOTKEYS.with(|h| {
         let mut h = h.borrow_mut();
         let Some((manager, keys)) = h.as_mut() else { return Err("hotkeys unavailable".to_string()) };
         let current = keys[slot];
+        if accel.is_empty() {
+            if let Some(old) = current { let _ = manager.unregister(old); }
+            keys[slot] = None;
+            id_slot.store(0, Ordering::Relaxed);
+            if slot == 3 { TALK_DOWN.store(false, Ordering::Relaxed); }
+            return Ok(());
+        }
+        let new: HotKey = accel.parse().map_err(|e| format!("{e}"))?;
         if current.map(|c| c.id()) == Some(new.id()) {
             return Ok(());
         }
@@ -181,6 +202,7 @@ pub(crate) fn set_hotkey(slot: usize, accel: &str) -> Result<(), String> {
             Ok(()) => {
                 keys[slot] = Some(new);
                 id_slot.store(new.id(), Ordering::Relaxed);
+                if slot == 3 { TALK_DOWN.store(false, Ordering::Relaxed); }
                 Ok(())
             }
             Err(e) => {
