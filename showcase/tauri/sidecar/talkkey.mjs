@@ -8,7 +8,7 @@
  *   shell refused (another app owns it). hotkeys: the shell can have global shortcuts (false on Wayland). hold: the
  *   modifier keys as the panel writes them, e.g. "⌃⌥".
  * @returns {{ usable: boolean, locked: boolean, hint: string, summary: string, holdHint: string }}
- *   usable: the shell holds the key and pressing it listens. locked: the key can't be changed right now (voice off,
+ *   usable: the shell holds the key and holding it listens. locked: the key can't be changed right now (voice off,
  *   no speech model, or a key the shell refused), so the panel disables its button and shows `hint` as the reason;
  *   Clear stays available, so a refused key can be dropped to pick another. hint: the line under "Talk key".
  *   summary: the Voice page's one-line "how you talk". holdHint: the line under "Hold to talk".
@@ -22,11 +22,11 @@ export const talkKeyState = ({ key = '', voiceOn = false, ready = false, error =
     : !ready ? 'Download the voice model first.'
       : error ? `Another app already uses ${error}. Clear it to pick another key.`
         : !hotkeys ? (key ? `In your desktop's Keyboard Shortcuts settings, bind ${key} to “Talk to me” below.` : 'On Wayland, choose a key in your desktop Keyboard Shortcuts settings and bind it to “Talk to me” below.')
-          : key ? `Press ${key} to start listening; press again or pause to send.`
-            : 'Choose a function key to start listening hands-free; press again or pause to send.';
+          : key ? `Hold ${key} to talk; release to send.`
+            : 'Choose a function key to start listening hands-free; hold to talk, release to send.';
   // Voice off is a state, not an instruction: the switch is off, so say what that means rather than "hold the keys".
   const summary = !voiceOn ? 'Off: the mic stays closed'
-    : usable ? `Press ${key} to listen, then press again or pause to send`
+    : usable ? `Hold ${key} to talk, release to send`
       : !hotkeys && key ? `Bind ${key} to Talk to me in Keyboard settings`
         : hotkeys && hold ? `Hold ${hold} to talk`
           : 'Press your talk shortcut to talk';

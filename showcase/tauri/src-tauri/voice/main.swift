@@ -775,6 +775,14 @@ final class Voice {
         }
     }
 
+    /// Hold-to-talk: release the key ends listening and sends what was heard.
+    func endAndSend() {
+        switch phase {
+        case .armed, .holding, .handsFree: end("keyRelease"); finish()
+        default: break
+        }
+    }
+
     func externalCancel() {
         if phase == .armed || phase == .holding || phase == .handsFree { cancel() }
         blocked = true
@@ -1200,6 +1208,7 @@ Thread.detachNewThread {
         case "cancel": DispatchQueue.main.async { voice.externalCancel() }
         case "listen": DispatchQueue.main.async { voice.listenNow() }
         case "toggle": DispatchQueue.main.async { voice.toggle() }
+        case "end": DispatchQueue.main.async { voice.endAndSend() }
         // The sidekick is answering (it appears where the cursor is): the listening pill can go.
         case "handoff": DispatchQueue.main.async { voice.wave.hide() }
         // The sidekick following the cursor in its cursor form, drawn here (buddy.swift) until the page takes it back.

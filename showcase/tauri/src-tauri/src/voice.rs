@@ -124,13 +124,19 @@ pub(crate) fn init_hotkeys(app: &AppHandle) {
     let app = app.clone();
     GlobalHotKeyEvent::set_event_handler(Some(move |e: GlobalHotKeyEvent| {
         if e.id() != 0 && e.id() == TALK_ID.load(Ordering::Relaxed) {
-            if e.state() == HotKeyState::Released {
-                TALK_DOWN.store(false, Ordering::Relaxed);
-                return;
+            match e.state() {
+                HotKeyState::Pressed => {
+                    TALK_DOWN.store(true, Ordering::Relaxed);
+                    let app2 = app.clone();
+                    let _ = app.run_on_main_thread(move || to_voice(&app2, &json!({ "cmd": "listen" })));
+                }
+                HotKeyState::Released => {
+                    TALK_DOWN.store(false, Ordering::Relaxed);
+                    let app2 = app.clone();
+                    let _ = app.run_on_main_thread(move || to_voice(&app2, &json!({ "cmd": "end" })));
+                }
+                _ => {}
             }
-            if TALK_DOWN.swap(true, Ordering::Relaxed) { return; }
-            let app2 = app.clone();
-            let _ = app.run_on_main_thread(move || to_voice(&app2, &json!({ "cmd": "toggle" })));
             return;
         }
         if e.state() != HotKeyState::Pressed {

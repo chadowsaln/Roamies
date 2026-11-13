@@ -9,8 +9,8 @@ const state = (over) => talkKeyState({ ...base, ...over });
 const rows = [
   ['it works', {}, {
     usable: true, locked: false,
-    hint: 'Press F8 to start listening; press again or pause to send.',
-    summary: 'Press F8 to listen, then press again or pause to send',
+    hint: 'Hold F8 to talk; release to send.',
+    summary: 'Hold F8 to talk, release to send',
   }],
   ['voice is off', { voiceOn: false }, {
     usable: false, locked: true,
@@ -29,7 +29,7 @@ const rows = [
   }],
   ['no key yet', { key: '' }, {
     usable: false, locked: false,
-    hint: 'Choose a function key to start listening hands-free; press again or pause to send.',
+    hint: 'Choose a function key to start listening hands-free; hold to talk, release to send.',
     summary: 'Hold ⌃⌥ to talk',
   }],
   ['Wayland, a key picked', { hotkeys: false }, {
@@ -65,10 +65,10 @@ for (const [over, want] of [[{}, false], [{ key: '' }, false], [{ error: 'F8' },
 assert.equal(state({ error: '', key: '' }).locked, false);
 assert.equal(state({ error: '', key: '' }).usable, false);
 
-// Nothing claims a press that does nothing: every not-usable state says so instead of "Press F8 to listen".
+// Nothing claims a press that does nothing: every not-usable state says so instead of "Hold F8 to talk".
 for (const over of [{ voiceOn: false }, { ready: false }, { error: 'F8' }, { hotkeys: false }, { key: '' }]) {
   assert.equal(state(over).usable, false);
-  assert.ok(!/^Press F8 to listen/.test(state(over).summary), 'no press claim while it cannot listen');
+  assert.ok(!/^Hold F8 to talk/.test(state(over).summary), 'no hold claim while it cannot listen');
 }
 
 console.log('talkkey tests: passed');

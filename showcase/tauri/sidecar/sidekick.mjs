@@ -274,13 +274,13 @@ const validSummon = (a) => typeof a === 'string' && /^((Control|Alt|Shift|Comman
 // takes the talk key while that key can listen, so one saved for later isn't taken from every app for nothing.
 const sendKeys = () => send({ type: 'keybinds', ...keys(), talkKey: HOTKEYS_OK ? (talkKeyOn() ? keys().talkKey : '') : undefined, write: HOTKEYS_OK ? keys().write : undefined });
 // How to talk, in a sentence: hold the keys, or on Wayland (where no app can watch the keyboard) press the shortcut
-// they bound to `roamies --talk`, which starts listening and sends on a second press or a pause.
-const talkHow = () => talkKeyOn() ? `Press ${keys().talkKey}` : HOTKEYS_OK ? `Hold ${talkWords().replace('+', ' and ')}` : 'Press your talk shortcut';
+// they bound to `roamies --talk`, which holds to talk and releases to send.
+const talkHow = () => talkKeyOn() ? `Hold ${keys().talkKey}` : HOTKEYS_OK ? `Hold ${talkWords().replace('+', ' and ')}` : 'Press your talk shortcut';
 const talkHowLong = () => talkKeyOn()
-  ? `Press ${keys().talkKey}, talk, then press it again (or just pause)`
+  ? `Hold ${keys().talkKey} to talk; release to send`
   : (HOTKEYS_OK ? `${talkHow()} while you talk` : 'Press your talk shortcut, talk, then press it again (or just pause)');
 const talkPrompt = () => talkKeyOn()
-  ? `${userName} presses ${keys().talkKey} to start listening, then presses it again or pauses to send`
+  ? `${userName} holds ${keys().talkKey} to talk and releases to send`
   : HOTKEYS_OK ? `${userName} holds ${talkWords()} to talk`
     : `${userName} presses the key they bound to ${BIND.talk} to start talking and again to send (a pause sends too)`;
 const MAC = process.platform === 'darwin';
