@@ -101,13 +101,21 @@ body {
 /* ---------- progress: the LED bar is the only step indicator ---------- */
 .top { display: flex; align-items: center; margin-bottom: 22px; }
 .progress { display: flex; gap: 4px; margin: 0; padding: 0; list-style: none; }
-.progress li { width: 22px; height: 6px; background: #14302f; transition: background-color .3s var(--ease), box-shadow .3s var(--ease); }
+/* An unlit segment is still a segment: at 3:1 on the page it can be counted, so the bar says how many steps there
+   are as well as how far along it is. */
+.progress li { width: 22px; height: 6px; background: var(--line-hi); transition: background-color .3s var(--ease), box-shadow .3s var(--ease); }
 .progress li.done { background: #2fae9b; }
 .progress li[aria-current="step"] { background: var(--accent); box-shadow: 0 0 8px rgba(120, 255, 226, 0.75); }
 
 /* ---------- steps ---------- */
 /* The right padding keeps the scrollbar, when there is one, clear of the text. */
 .step { flex: 1; min-height: 0; overflow-y: auto; padding-inline-end: 10px; animation: step-in .32s var(--ease); }
+/* A step that runs past the window fades out at its bottom edge (onboarding.js sets .more while there is more to
+   scroll), so the line the fold cuts reads as "below", not as clipped. */
+.step.more {
+  -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 20px), transparent);
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 20px), transparent);
+}
 
 /* ---------- scrollbars: a thin LED bar, square, in its own lane, never over the text ---------- */
 :root { --sb: 8px; }
@@ -177,7 +185,9 @@ h2 { margin: 0; font: 700 13px/1.35 var(--mono); font-stretch: 87.5%; color: var
 .row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 12px; padding: 6px 10px 6px 14px; min-height: 46px; }
 .row.focus { --bc: var(--line-hi); }
 .row.granted { --bc: #24675f; }
-.row p { margin: 1px 0 0; font-size: 11px; line-height: 1.4; color: var(--ink-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* Two lines, then an ellipsis: both fit inside the row's 46 px, so a row still never grows, and a sentence that
+   runs long is readable instead of living in a hover-only tooltip. */
+.row p { margin: 1px 0 0; font-size: 11px; line-height: 1.4; color: var(--ink-3); display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
 .status {
   display: inline-flex; align-items: center; gap: 8px; white-space: nowrap;
   font: 700 11px/1.2 var(--mono); font-stretch: 87.5%; letter-spacing: 0.08em; text-transform: uppercase; color: var(--accent);
@@ -194,7 +204,7 @@ h2 { margin: 0; font: 700 13px/1.35 var(--mono); font-stretch: 87.5%; color: var
 /* Download progress: the step bar's LED segments, smaller. */
 .dl-wrap { display: inline-flex; align-items: center; gap: 10px; }
 .dl { display: inline-flex; gap: 2px; }
-.dl i { width: 8px; height: 6px; background: #14302f; transition: background-color .3s var(--ease), box-shadow .3s var(--ease); }
+.dl i { width: 8px; height: 6px; background: var(--line-hi); transition: background-color .3s var(--ease), box-shadow .3s var(--ease); }
 .dl i.on { background: var(--accent); box-shadow: 0 0 6px rgba(120, 255, 226, 0.6); }
 .dl-pct { min-width: 4ch; text-align: right; }
 

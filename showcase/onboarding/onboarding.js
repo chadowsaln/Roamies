@@ -132,6 +132,20 @@
     e.replaceChildren(el('span', { textContent: text, title: text }), ...(link ? [link] : []));
     e.removeAttribute('title'); e.hidden = false;
   }
+  // A key field the app refused: mark it invalid and point it at the line that says why, so the error is read with the
+  // field itself (not only as a loose alert), and hand the caret back for a retry. Cleared on the next attempt.
+  const KEY_NOTES = { 'fish-input': 'fish-note', 'key-input': '' };
+  function keyBad(id, errorId, bad) {
+    const n = $(id), note = KEY_NOTES[id];
+    if (bad) {
+      n.setAttribute('aria-invalid', 'true');
+      n.setAttribute('aria-describedby', [note, errorId].filter(Boolean).join(' '));
+      n.focus({ preventScroll: true });
+    } else {
+      n.removeAttribute('aria-invalid');
+      if (note) n.setAttribute('aria-describedby', note); else n.removeAttribute('aria-describedby');
+    }
+  }
   const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
   const CHEERS = ['Got it!', 'Nice!', 'Perfect.', 'Yes!'];
   const isMac = () => state?.platform === 'darwin';
@@ -196,7 +210,11 @@
     },
     // A voice download that's under way counts: it carries on after the guide closes.
     done() { return this.rows().every((r) => this.status(r.id) === 'granted' || (r.id === 'voice' && state.voiceModel.status === 'downloading')); },
-    async allow(r) {
+    fill(list, rows) {
+      // Put the keyboard back where it was: the buttons below are new nodes, so focus would fall back to the page.
+      const had = list.contains(document.activeElement) ? [...list.querySelectorAll('button')].indexOf(document.activeElement) : -1;
+      $('perm-lead').textContent = isMac() ? 'Only used when you ask me something.' : rows.length ? `One download so I can hear you. Your voice never leaves ${thisPC()}.` : 'Nothing to allow here. Just one choice below.';
+      const firstPending = rows.find((r) => this.status(r.id) !== 'granted');
       if (r.id === 'voice') { send({ type: 'ob_voice_model' }); act('hype'); quip('Downloading! Keep going', 3); return; }
       this.waiting = r.id; this.asked[r.id] = true; this.render();
       poseFn = POSE.point(1.7, -0.1);
@@ -241,9 +259,37 @@
       this.files = { ...this.files, ...status };
       if (this.waiting === 'files') { this.waiting = null; invoke('focus_guide').catch(() => {}); }
     },
+    // The statuses are polled every 1.5 s, so the rows are rebuilt only when what they show has changed: replacing
+    // them under the user drops keyboard focus to the page, and the list is a live region, so it would re-announce
+    // itself on every tick.
+    sig: '',
     render() {
-      const list = $('perm-rows');
       const rows = this.rows();
+      const sig = JSON.stringify([rows, rows.map((r) => this.status(r.id)), this.asked, this.waiting, this.shot,
+        state?.actions, state?.login, this.guiding]);
+      if (sig !== this.sig) { this.sig = sig; this.fill(rows); }
+
+      if (this.guiding && this.status(this.guiding) === 'granted') this.unguide();
+
+      const screenStuck = isMac() && this.asked.screen && this.status('screen') !== 'granted';
+      if (screenStuck && !this.hinted && this.waiting !== 'screen') { this.hinted = true; setTimeout(() => at('perms') && quip('Switched me on? Hit Reopen', 5), 6000); }
+
+      // Cheer for anything that just turned green.
+      for (const r of rows) {
+        const g = this.status(r.id) === 'granted';
+        if (g && !this.seen.has(r.id)) { this.seen.add(r.id); if (at('perms') && this.since && clock - this.since > 0.8) { act('hype'); quip(pick(CHEERS)); } }
+      }
+      const firstPending = rows.find((r) => this.status(r.id) !== 'granted');
+      if (at('perms')) {
+        if (firstPending && this.waiting == null) { poseFn = POSE.point(1.7, -0.1); aim($(`perm-${firstPending.id}`)); }
+        else if (!firstPending) { poseFn = null; moveTo(HOME.x, HOME.y); }
+      }
+      nav();
+    },
+    fill(rows) {
+      const list = $('perm-rows');
+      // Put the keyboard back where it was: every button below is a new node, so focus would fall back to the page.
+      const had = list.contains(document.activeElement) ? [...list.querySelectorAll('button')].indexOf(document.activeElement) : -1;
       $('perm-lead').textContent = isMac() ? 'Only used when you ask me something.' : rows.length ? `One download so I can hear you. Your voice never leaves ${thisPC()}.` : 'Nothing to allow here. Just one choice below.';
       const firstPending = rows.find((r) => this.status(r.id) !== 'granted');
       list.replaceChildren(...rows.map((r) => {
@@ -284,22 +330,7 @@
         list.append(el('li', { className: 'px row' },
           el('div', {}, el('h2', { textContent: 'Open at login' }), el('p', { textContent: 'Start with your computer.' })), ls));
       }
-
-      if (this.guiding && this.status(this.guiding) === 'granted') this.unguide();
-
-      const screenStuck = isMac() && this.asked.screen && this.status('screen') !== 'granted';
-      if (screenStuck && !this.hinted && this.waiting !== 'screen') { this.hinted = true; setTimeout(() => at('perms') && quip('Switched me on? Hit Reopen', 5), 6000); }
-
-      // Cheer for anything that just turned green.
-      for (const r of rows) {
-        const g = this.status(r.id) === 'granted';
-        if (g && !this.seen.has(r.id)) { this.seen.add(r.id); if (at('perms') && this.since && clock - this.since > 0.8) { act('hype'); quip(pick(CHEERS)); } }
-      }
-      if (at('perms')) {
-        if (firstPending && this.waiting == null) { poseFn = POSE.point(1.7, -0.1); aim($(`perm-${firstPending.id}`)); }
-        else if (!firstPending) { poseFn = null; moveTo(HOME.x, HOME.y); }
-      }
-      nav();
+      if (had >= 0) [...list.querySelectorAll('button')][had]?.focus({ preventScroll: true });
     },
     enter() {
       perms.since = clock;
@@ -434,7 +465,8 @@
     },
     onLogin(msg) {
       // A key save has no id; a sign-in's messages carry the one this guide gave it. Older attempts are ignored.
-      if (msg.id == null ? ai.keyBusy !== msg.provider : msg.id !== ai.loginId) return;
+      const wasKey = msg.id == null;
+      if (wasKey ? ai.keyBusy !== msg.provider : msg.id !== ai.loginId) return;
       if (msg.phase === 'browser') return;
       if (msg.phase === 'status') { ai.status = String(msg.text ?? ''); ai.arm(); ai.render(); return; }
       clearTimeout(ai.timer);
@@ -442,6 +474,7 @@
       if (msg.phase === 'done') { act('hype'); quip('Ooh, a brain!'); $('code-form').hidden = true; }
       else { showError('login-error', msg.error || "That didn't work. Try again.", msg.copy); quip('Hmm. Try again?'); }
       ai.render();
+      if (wasKey) keyBad('key-input', 'login-error', msg.phase !== 'done');
     },
     enter() {
       ai.render();
@@ -478,6 +511,8 @@
     e.preventDefault();
     const key = $('key-input').value.trim();
     if (!key || !ai.key) return $('key-input').focus();
+    keyBad('key-input', 'login-error', false);
+    $('login-error').hidden = true;
     ai.keyBusy = ai.key; ai.render();
     poseFn = POSE.think();
     send({ type: 'ob_apikey', provider: ai.key, key });
@@ -593,6 +628,7 @@
       if (msg.ok) { act('hype'); $('fish-error').hidden = true; replies.changing = false; replies.prov = null; }
       else showError('fish-error', msg.error || "That key didn't work.", msg.copy);
       replies.render();
+      keyBad('fish-input', 'fish-error', !msg.ok);
     },
     enter() {
       replies.render();
@@ -626,6 +662,7 @@
     e.preventDefault();
     const key = $('fish-input').value.trim();
     if (!key || replies.saving) return $('fish-input').focus();
+    keyBad('fish-input', 'fish-error', false);
     replies.saving = true; $('fish-error').hidden = true; replies.render();
     poseFn = POSE.think();
     send({ type: TTS[replies.tts()].send, key });
@@ -1198,6 +1235,13 @@
   for (const s of ALL) if (!STEPS.includes(s)) sectionOf(s).hidden = true;
   const sections = STEPS.map(sectionOf);
   $('progress').replaceChildren(...STEPS.map(() => el('li')));
+  // A step tall enough to scroll fades at its bottom edge (onboarding.css .more), so a line the fold cuts reads as
+  // "more below" instead of as clipped. It is only the scroll position, so it is cheap to keep up to date.
+  const stepMore = (sec = sections[cur]) => {
+    if (sec) sec.classList.toggle('more', sec.scrollHeight - sec.scrollTop - sec.clientHeight > 1);
+  };
+  for (const sec of document.querySelectorAll('.step')) sec.addEventListener('scroll', () => stepMore(sec), { passive: true });
+  document.fonts?.ready.then(() => stepMore());
 
   // Required steps unlock after a while anyway, so a missed permission event can never trap anyone.
   let stuckTimer = null, escape = false;
@@ -1211,6 +1255,7 @@
     $('skip').hidden = !(s.skip && !ready) && !(escape && !ready);
     $('skip').textContent = s.skip ? 'Skip for now' : 'Continue anyway';
     s.nav?.();
+    stepMore();
   }
   function go(i) {
     if (i === cur || i < 0 || i >= STEPS.length) return;
